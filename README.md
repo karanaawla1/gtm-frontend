@@ -1,36 +1,129 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GTM Decision Tracker — Frontend 📊
 
-## Getting Started
+> Dashboard UI for the GTM Decision Tracker — a ROI Attribution Engine that helps GTM teams decide whether to SCALE, MAINTAIN, MONITOR, or KILL a decision based on time-decay weighted revenue attribution.
 
-First, run the development server:
+---
 
+## 🎯 What It Does
+
+This is the frontend dashboard that connects to the [GTM Decision Tracker backend](https://github.com/karanaawla1/gtm-decision-tracker) (FastAPI + PostgreSQL + Redis + Celery). It lets users:
+
+- View dashboard stats (total decisions, ROI averages, recommendation breakdowns)
+- Add new GTM decisions (hires, ad spend, vendors, tools)
+- Link revenue/pipeline/churn outcomes back to decisions
+- Run ROI + confidence analysis on any decision
+- Bulk-import historical decisions via CSV
+- View and delete decisions in a sortable table
+
+---
+
+## 🏗️ Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| Data Fetching | Native `fetch` against FastAPI REST API |
+
+---
+
+## 🚀 Quick Start (Local)
+
+### 1. Clone & Install
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/karanaawla1/gtm-frontend.git
+cd gtm-frontend
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. Environment Variables
+Create a `.env.local` file in the project root:
+```dotenv
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+> Set this to wherever your backend is running — local FastAPI server or a deployed backend URL.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 3. Run the Dev Server
+```bash
+npm run dev
+```
 
-## Learn More
+Visit: **http://localhost:3000**
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 📱 Pages / Views
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Page | Description |
+|---|---|
+| **Dashboard** | Overview stats — total decisions, SCALE/KILL counts, average ROI, recent decisions table |
+| **Decisions** | Full list of all decisions with ROI, confidence bars, and recommendation badges |
+| **Analysis** | Select a decision and view its detailed ROI + confidence breakdown |
+| **Add Decision** | Form to log a new GTM decision (type, owner, cost, date, description) |
+| **Add Outcome** | Form to link a revenue/pipeline/churn result back to a decision |
+| **CSV Upload** | Drag-and-drop bulk import of historical decisions |
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 🎨 Design
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Dark theme with gradient accents (indigo/purple)
+- Color-coded recommendation badges:
+  - 🟢 SCALE — emerald
+  - 🔴 KILL — red
+  - 🟡 MONITOR — amber
+  - 🔵 MAINTAIN — sky blue
+- Responsive sidebar navigation (collapses on mobile)
+- Confidence and ROI shown as animated progress bars
+
+---
+
+## 🔌 Connecting to the Backend
+
+The frontend talks to the FastAPI backend via these endpoints:
+
+| Action | Endpoint |
+|---|---|
+| Fetch all decisions | `GET /api/decisions/` |
+| Fetch dashboard stats | `GET /api/decisions/summary` |
+| Fetch ROI analysis | `GET /api/decisions/{id}/analysis` |
+| Create a decision | `POST /api/decisions/` |
+| Update a decision | `PATCH /api/decisions/{id}` |
+| Delete a decision | `DELETE /api/decisions/{id}` |
+| Add an outcome | `POST /api/outcomes/` |
+| Upload CSV | `POST /api/decisions/upload-csv` |
+
+All requests use `NEXT_PUBLIC_API_URL` as the base URL — change this in `.env.local` (or your hosting platform's environment variables) to point at the live backend.
+
+---
+
+## 🌐 Live Demo
+
+- **Frontend:** [https://gtm-frontend-production.up.railway.app](https://gtm-frontend-production.up.railway.app)
+- **Backend API Docs:** (link to be added once backend is deployed)
+
+---
+
+## 📁 Project Structure
+
+```
+gtm-frontend/
+├── app/
+│   ├── page.tsx          # Main app — all pages/components
+│   ├── layout.tsx
+│   ├── globals.css
+│   └── lib/
+│       ├── api.ts          # API helper functions
+│       └── utils.ts         # Formatting helpers
+├── tailwind.config.ts
+├── package.json
+└── .env.local
+```
+
+---
+
+## 🔗 Related Repository
+
+Backend: [gtm-decision-tracker](https://github.com/karanaawla1/gtm-decision-tracker) — FastAPI + PostgreSQL + Redis + Celery attribution engine
