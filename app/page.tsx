@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://15.134.209.242:8000';
 
 interface Decision {
   id: string; type: string; owner: string;
