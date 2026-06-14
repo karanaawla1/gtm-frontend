@@ -1,129 +1,140 @@
-# GTM Decision Tracker — Frontend 📊
+# GTM Decision Tracker — Frontend
 
-> Dashboard UI for the GTM Decision Tracker — a ROI Attribution Engine that helps GTM teams decide whether to SCALE, MAINTAIN, MONITOR, or KILL a decision based on time-decay weighted revenue attribution.
+> Dashboard UI for the GTM Decision Tracker. Lets GTM teams log decisions, attach revenue outcomes, and view automated ROI + recommendations (SCALE / MAINTAIN / MONITOR / KILL).
 
----
-
-## 🎯 What It Does
-
-This is the frontend dashboard that connects to the [GTM Decision Tracker backend](https://github.com/karanaawla1/gtm-decision-tracker) (FastAPI + PostgreSQL + Redis + Celery). It lets users:
-
-- View dashboard stats (total decisions, ROI averages, recommendation breakdowns)
-- Add new GTM decisions (hires, ad spend, vendors, tools)
-- Link revenue/pipeline/churn outcomes back to decisions
-- Run ROI + confidence analysis on any decision
-- Bulk-import historical decisions via CSV
-- View and delete decisions in a sortable table
+**Live app:** `https://gtm-frontend-production.up.railway.app`
 
 ---
 
-## 🏗️ Tech Stack
+## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Framework | Next.js (App Router) |
-| Language | TypeScript |
-| Styling | Tailwind CSS |
-| Data Fetching | Native `fetch` against FastAPI REST API |
+- **Next.js** (App Router) + **TypeScript**
+- **Tailwind CSS** — styling
+- **Railway** — deployment
 
 ---
 
-## 🚀 Quick Start (Local)
+## Quick Start
 
-### 1. Clone & Install
 ```bash
 git clone https://github.com/karanaawla1/gtm-frontend.git
 cd gtm-frontend
 npm install
 ```
 
-### 2. Environment Variables
-Create a `.env.local` file in the project root:
-```dotenv
+Create a `.env.local` file:
+```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-> Set this to wherever your backend is running — local FastAPI server or a deployed backend URL.
-
-### 3. Run the Dev Server
+Run the dev server:
 ```bash
 npm run dev
 ```
 
-Visit: **http://localhost:3000**
+Open `http://localhost:3000`
 
 ---
 
-## 📱 Pages / Views
+## Pages / Features
 
 | Page | Description |
 |---|---|
-| **Dashboard** | Overview stats — total decisions, SCALE/KILL counts, average ROI, recent decisions table |
-| **Decisions** | Full list of all decisions with ROI, confidence bars, and recommendation badges |
-| **Analysis** | Select a decision and view its detailed ROI + confidence breakdown |
-| **Add Decision** | Form to log a new GTM decision (type, owner, cost, date, description) |
-| **Add Outcome** | Form to link a revenue/pipeline/churn result back to a decision |
-| **CSV Upload** | Drag-and-drop bulk import of historical decisions |
+| Dashboard | Overview stats — total decisions, scale-worthy count, decisions needing action, average ROI, recent decisions table |
+| Decisions | Full list of decisions with type, owner, cost, ROI, confidence, recommendation |
+| Analysis | Pick a decision and view its ROI, confidence, outcome count, and recommendation explanation |
+| Add Decision | Form to log a new GTM decision (type, owner, cost, date, description) |
+| Add Outcome | Form to link a revenue/pipeline/churn outcome to an existing decision |
+| CSV Upload | Bulk-import decisions via CSV |
 
 ---
 
-## 🎨 Design
+## Project Structure
 
-- Dark theme with gradient accents (indigo/purple)
-- Color-coded recommendation badges:
-  - 🟢 SCALE — emerald
-  - 🔴 KILL — red
-  - 🟡 MONITOR — amber
-  - 🔵 MAINTAIN — sky blue
-- Responsive sidebar navigation (collapses on mobile)
-- Confidence and ROI shown as animated progress bars
+```
+app/
+├── page.tsx          # Main app — all pages and components in one file
+├── layout.tsx        # Root layout
+└── globals.css       # Tailwind + global styles
+```
 
 ---
 
-## 🔌 Connecting to the Backend
+<br>
 
-The frontend talks to the FastAPI backend via these endpoints:
+# 📖 Detailed Documentation
 
-| Action | Endpoint |
+## What This App Does
+
+GTM teams spend money on hires, ads, vendors, and tools — but rarely know which decisions actually drove revenue. This dashboard lets a team:
+
+1. Log a **decision** (what was spent, by whom, when)
+2. Log **outcomes** (revenue/pipeline that followed)
+3. See an automatic **ROI + recommendation** per decision, calculated by the backend's time-decay attribution engine
+
+## Recommendation Badges
+
+| Badge | Meaning |
 |---|---|
-| Fetch all decisions | `GET /api/decisions/` |
-| Fetch dashboard stats | `GET /api/decisions/summary` |
-| Fetch ROI analysis | `GET /api/decisions/{id}/analysis` |
-| Create a decision | `POST /api/decisions/` |
-| Update a decision | `PATCH /api/decisions/{id}` |
-| Delete a decision | `DELETE /api/decisions/{id}` |
-| Add an outcome | `POST /api/outcomes/` |
+| 🚀 SCALE | ROI > 3x, high confidence — invest more |
+| 🔴 KILL | ROI < 0.5x, high confidence — stop this spend |
+| 👀 MONITOR | Not enough data yet — add more outcomes |
+| ✅ MAINTAIN | Performing as expected |
+| ⚪ NO_DATA | No outcomes linked yet |
+
+## How the Frontend Talks to the Backend
+
+All API calls go through `process.env.NEXT_PUBLIC_API_URL`. Set this to:
+- `http://localhost:8000` for local development (backend running via `uvicorn`)
+- The Railway backend URL (e.g. `https://gtm-decision-tracker-production.up.railway.app`) for production
+
+The backend has CORS enabled (`allow_origins=["*"]` in `app/main.py`) so the frontend can call it cross-origin.
+
+## API Calls Used
+
+| Frontend action | Backend endpoint |
+|---|---|
+| Load dashboard stats | `GET /api/decisions/summary` |
+| Load decisions list | `GET /api/decisions/` |
+| Load ROI for a decision | `GET /api/decisions/{id}/analysis` |
+| Create decision | `POST /api/decisions/` |
+| Delete decision | `DELETE /api/decisions/{id}` |
+| Add outcome | `POST /api/outcomes/` |
 | Upload CSV | `POST /api/decisions/upload-csv` |
 
-All requests use `NEXT_PUBLIC_API_URL` as the base URL — change this in `.env.local` (or your hosting platform's environment variables) to point at the live backend.
+> ⚠️ **Note:** `GET /api/decisions/` now returns a paginated object `{ items: [...], pagination: {...} }` instead of a plain array. If you've recently updated the backend, make sure `getDecisions()` reads `data.items` instead of treating the response as an array directly — otherwise list rendering will break.
 
----
+## Adding a Decision — Required Fields
 
-## 🌐 Live Demo
+- `type` — one of `hire`, `ad_spend`, `vendor`, `tool`
+- `owner` — team or person responsible
+- `cost_amount` — number (USD)
+- `date` — ISO date
+- `description` — optional free text
 
-- **Frontend:** [https://gtm-frontend-production.up.railway.app](https://gtm-frontend-production.up.railway.app)
-- **Backend API Docs:** (link to be added once backend is deployed)
+## Adding an Outcome — Required Fields
 
----
+- `decision_id` — UUID of the decision (from the decisions list)
+- `metric_type` — one of `revenue`, `pipeline`, `churn`
+- `value` — number
+- `date` — ISO date
+- `source` — usually `manual`
 
-## 📁 Project Structure
+## CSV Upload Format
 
+```csv
+type,date,owner,cost_amount,description
+hire,2024-01-10,Sales Team,75000,SDR hire for outbound pipeline
+ad_spend,2024-01-15,Marketing,40000,LinkedIn Ads Q1 campaign
 ```
-gtm-frontend/
-├── app/
-│   ├── page.tsx          # Main app — all pages/components
-│   ├── layout.tsx
-│   ├── globals.css
-│   └── lib/
-│       ├── api.ts          # API helper functions
-│       └── utils.ts         # Formatting helpers
-├── tailwind.config.ts
-├── package.json
-└── .env.local
-```
 
----
+CSV upload only creates **decisions**. Outcomes must be added separately afterward through the Add Outcome page for ROI to show up.
 
-## 🔗 Related Repository
+## Deployment
 
-Backend: [gtm-decision-tracker](https://github.com/karanaawla1/gtm-decision-tracker) — FastAPI + PostgreSQL + Redis + Celery attribution engine
+Deployed on Railway, connected to the backend via the `NEXT_PUBLIC_API_URL` environment variable. Any change to this variable requires a redeploy.
+
+## Links
+
+- Backend API docs (Swagger): `https://gtm-decision-tracker-production.up.railway.app/docs`
+- Backend repo: `https://github.com/karanaawla1/gtm-decision-tracker`
