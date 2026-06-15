@@ -2,7 +2,7 @@
 
 > Dashboard UI for the GTM Decision Tracker. Lets GTM teams log decisions, attach revenue outcomes, and view automated ROI + recommendations (SCALE / MAINTAIN / MONITOR / KILL).
 
-**Live app:** `https://gtm-frontend-production.up.railway.app`
+**Live app:** "https://gtm-frontend-production.up.railway.app"
 
 ---
 
@@ -136,5 +136,5 @@ Deployed on Railway, connected to the backend via the `NEXT_PUBLIC_API_URL` envi
 
 ## Links
 
-- Backend API docs (Swagger): `https://gtm-decision-tracker-production.up.railway.app/docs`
-- Backend repo: `https://github.com/karanaawla1/gtm-decision-tracker`
+- Backend API docs (Swagger): "https://gtm-decision-tracker-production.up.railway.app/docs"
+- Backend repo: "https://github.com/karanaawla1/gtm-decision-tracker"
