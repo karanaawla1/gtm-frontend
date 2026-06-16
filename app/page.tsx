@@ -536,7 +536,7 @@ function DecisionsPage({ goTo }: { goTo: (p: Page) => void }) {
                 <Th>Cost</Th>
                 <Th>Date</Th>
                 <Th>Description</Th>
-                <Th></Th>
+                <Th>&nbsp;</Th>
               </tr>
             </thead>
             <tbody>
