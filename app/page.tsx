@@ -1,561 +1,1021 @@
-'use client';
-import { useState, useEffect } from 'react';
+"use client";
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://15.134.209.242:8000';
+import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  LineChart, Line, CartesianGrid, Cell
+} from "recharts";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type DecisionType = "hire" | "ad_spend" | "vendor" | "tool";
+type MetricType = "revenue" | "pipeline" | "churn";
+type Recommendation = "SCALE" | "KILL" | "MONITOR" | "MAINTAIN" | "NO_DATA";
+type Page = "dashboard" | "decisions" | "analysis" | "add-decision" | "add-outcome" | "csv";
 
 interface Decision {
-  id: string; type: string; owner: string;
-  cost_amount: number; description: string; status: string; date: string;
-}
-interface Analysis {
-  decision_id: string; roi: number; confidence: number;
-  recommendation: string; outcomes_count: number; from_cache: boolean;
+  id: string;
+  type: DecisionType;
+  owner: string;
+  cost_amount: number;
+  description?: string;
+  status: string;
+  date: string;
 }
 
-async function getDecisions(): Promise<Decision[]> {
-  const res = await fetch(`${API}/api/decisions/`); return res.json();
+interface Analysis {
+  decision_id: string;
+  roi: number;
+  confidence: number;
+  recommendation: Recommendation;
+  outcome_count: number;
+  explanation?: string;
+  weighted_revenue?: number;
+  from_cache?: boolean;
 }
-async function getSummary() {
-  const res = await fetch(`${API}/api/decisions/summary`); return res.json();
+
+interface Summary {
+  total_decisions: number;
+  scale_worthy: number;
+  need_action: number;
+  avg_roi: number;
+  recent_decisions: (Decision & { roi?: number; recommendation?: Recommendation })[];
 }
-async function getAnalysis(id: string): Promise<Analysis> {
-  const res = await fetch(`${API}/api/decisions/${id}/analysis`); return res.json();
-}
-async function createDecision(data: any) {
-  const res = await fetch(`${API}/api/decisions/`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  }); return res.json();
-}
-async function createOutcome(data: any) {
-  const res = await fetch(`${API}/api/outcomes/`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  }); return res.json();
-}
-async function uploadCSV(file: File) {
-  const fd = new FormData(); fd.append('file', file);
-  const res = await fetch(`${API}/api/decisions/upload-csv`, { method: 'POST', body: fd });
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://gtm-decision-tracker-production.up.railway.app";
+
+const DECISION_TYPES: DecisionType[] = ["hire", "ad_spend", "vendor", "tool"];
+const METRIC_TYPES: MetricType[] = ["revenue", "pipeline", "churn"];
+
+const TYPE_META: Record<DecisionType, { icon: string; color: string; bg: string; label: string }> = {
+  hire:     { icon: "👤", color: "#a78bfa", bg: "rgba(167,139,250,0.1)",  label: "Hire" },
+  ad_spend: { icon: "📣", color: "#fb923c", bg: "rgba(251,146,60,0.1)",   label: "Ad Spend" },
+  vendor:   { icon: "🤝", color: "#34d399", bg: "rgba(52,211,153,0.1)",   label: "Vendor" },
+  tool:     { icon: "🔧", color: "#60a5fa", bg: "rgba(96,165,250,0.1)",   label: "Tool" },
+};
+
+const REC_META: Record<Recommendation, { icon: string; label: string; color: string; bg: string }> = {
+  SCALE:    { icon: "↑", label: "Scale",    color: "#34d399", bg: "rgba(52,211,153,0.1)" },
+  KILL:     { icon: "✕", label: "Kill",     color: "#f87171", bg: "rgba(248,113,113,0.1)" },
+  MONITOR:  { icon: "◎", label: "Monitor",  color: "#fbbf24", bg: "rgba(251,191,36,0.1)" },
+  MAINTAIN: { icon: "→", label: "Maintain", color: "#818cf8", bg: "rgba(129,140,248,0.1)" },
+  NO_DATA:  { icon: "—", label: "No data",  color: "#4b5563", bg: "rgba(75,85,99,0.1)" },
+};
+
+const NAV_ITEMS: { id: Page; label: string; icon: string }[] = [
+  { id: "dashboard",     label: "Overview",     icon: "ti-layout-dashboard" },
+  { id: "decisions",     label: "Decisions",    icon: "ti-list-details" },
+  { id: "analysis",      label: "Analysis",     icon: "ti-chart-dots-3" },
+  { id: "add-decision",  label: "Add Decision", icon: "ti-circle-plus" },
+  { id: "add-outcome",   label: "Add Outcome",  icon: "ti-link" },
+  { id: "csv",           label: "Import CSV",   icon: "ti-upload" },
+];
+
+// ─── Utils ────────────────────────────────────────────────────────────────────
+
+const fmt = (n: number) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+
+const fmtROI = (n: number) => `${n.toFixed(2)}x`;
+
+async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (!res.ok) throw new Error(`${res.status}`);
   return res.json();
 }
-async function deleteDecision(id: string) {
-  await fetch(`${API}/api/decisions/${id}`, { method: 'DELETE' });
-}
 
-function formatCurrency(n: number) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(n);
-}
-function formatDate(d: string) {
-  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-}
+// ─── Tokens (CSS-in-JS) ───────────────────────────────────────────────────────
 
-const REC_CONFIG: Record<string, { bg: string; text: string; dot: string }> = {
-  SCALE:    { bg: 'bg-emerald-500/10', text: 'text-emerald-400', dot: 'bg-emerald-400' },
-  KILL:     { bg: 'bg-red-500/10',     text: 'text-red-400',     dot: 'bg-red-400' },
-  MONITOR:  { bg: 'bg-amber-500/10',   text: 'text-amber-400',   dot: 'bg-amber-400' },
-  MAINTAIN: { bg: 'bg-sky-500/10',     text: 'text-sky-400',     dot: 'bg-sky-400' },
-  NO_DATA:  { bg: 'bg-slate-500/10',   text: 'text-slate-400',   dot: 'bg-slate-400' },
+const T = {
+  bg:        "#0a0a0f",
+  surface:   "#111118",
+  surfaceHi: "#16161f",
+  border:    "rgba(255,255,255,0.07)",
+  borderHi:  "rgba(255,255,255,0.12)",
+  accent:    "#6d5bf7",
+  accentHi:  "#8b7cf8",
+  text:      "#f0f0f5",
+  textMid:   "#a0a0b8",
+  textLow:   "#545468",
+  radius:    12,
+  radiusSm:  8,
 };
 
-const TYPE_CONFIG: Record<string, { bg: string; text: string; emoji: string }> = {
-  hire:     { bg: 'bg-violet-500/10', text: 'text-violet-400', emoji: '👤' },
-  ad_spend: { bg: 'bg-orange-500/10', text: 'text-orange-400', emoji: '📢' },
-  vendor:   { bg: 'bg-blue-500/10',   text: 'text-blue-400',   emoji: '🤝' },
-  tool:     { bg: 'bg-teal-500/10',   text: 'text-teal-400',   emoji: '🔧' },
-};
+// ─── Atoms ────────────────────────────────────────────────────────────────────
 
-function RecBadge({ rec }: { rec: string }) {
-  const c = REC_CONFIG[rec] || REC_CONFIG.NO_DATA;
+function Spinner({ size = 20 }: { size?: number }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${c.bg} ${c.text}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
-      {rec}
-    </span>
-  );
-}
-
-function TypeBadge({ type }: { type: string }) {
-  const c = TYPE_CONFIG[type] || { bg: 'bg-slate-500/10', text: 'text-slate-400', emoji: '📌' };
-  return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold ${c.bg} ${c.text}`}>
-      {c.emoji} {type.replace('_', ' ')}
-    </span>
-  );
-}
-
-function Input({ label, ...props }: any) {
-  return (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1.5">{label}</label>
-      <input {...props} className="w-full bg-slate-900/50 border border-slate-700/50 text-slate-100 placeholder-slate-500 px-3.5 py-2.5 rounded-xl text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all" />
+    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", padding: 40 }}>
+      <div style={{
+        width: size, height: size,
+        border: `2px solid ${T.border}`,
+        borderTopColor: T.accent,
+        borderRadius: "50%",
+        animation: "spin 0.7s linear infinite",
+      }} />
     </div>
   );
 }
 
-function Select({ label, children, ...props }: any) {
+function RecBadge({ rec }: { rec: Recommendation }) {
+  const m = REC_META[rec] ?? REC_META.NO_DATA;
   return (
-    <div>
-      <label className="block text-xs font-medium text-slate-400 mb-1.5">{label}</label>
-      <select {...props} className="w-full bg-slate-900/50 border border-slate-700/50 text-slate-100 px-3.5 py-2.5 rounded-xl text-sm focus:outline-none focus:border-indigo-500 transition-all">
+    <span style={{
+      background: m.bg, color: m.color,
+      border: `1px solid ${m.color}26`,
+      padding: "3px 10px", borderRadius: 100,
+      fontSize: 11, fontWeight: 600, letterSpacing: "0.03em",
+      display: "inline-flex", alignItems: "center", gap: 5,
+      whiteSpace: "nowrap",
+    }}>
+      <span style={{ fontSize: 10 }}>{m.icon}</span>
+      {m.label}
+    </span>
+  );
+}
+
+function TypePill({ type }: { type: DecisionType }) {
+  const m = TYPE_META[type] ?? { icon: "?", color: T.textLow, bg: "transparent", label: type };
+  return (
+    <span style={{
+      background: m.bg, color: m.color,
+      border: `1px solid ${m.color}26`,
+      padding: "3px 10px", borderRadius: 100,
+      fontSize: 11, fontWeight: 600,
+      display: "inline-flex", alignItems: "center", gap: 5,
+    }}>
+      <span>{m.icon}</span> {m.label}
+    </span>
+  );
+}
+
+function KpiCard({ value, label, sub, color, icon }: {
+  value: string; label: string; sub?: string; color?: string; icon?: string;
+}) {
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.border}`,
+      borderRadius: T.radius, padding: "20px 22px", flex: 1, minWidth: 150,
+      display: "flex", flexDirection: "column", gap: 2,
+    }}>
+      {icon && (
+        <i className={`ti ${icon}`} style={{ fontSize: 16, color: color ?? T.textMid, marginBottom: 8 }} aria-hidden />
+      )}
+      <div style={{
+        fontSize: 26, fontWeight: 700,
+        color: color ?? T.text,
+        letterSpacing: "-0.03em", fontVariantNumeric: "tabular-nums",
+      }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 13, color: T.textMid, fontWeight: 500 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: T.textLow, marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function TableWrap({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.border}`,
+      borderRadius: T.radius, overflow: "hidden",
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function Th({ children }: { children: React.ReactNode }) {
+  return (
+    <th style={{
+      padding: "10px 16px", textAlign: "left",
+      fontSize: 11, fontWeight: 600, color: T.textLow,
+      letterSpacing: "0.06em", textTransform: "uppercase",
+      borderBottom: `1px solid ${T.border}`,
+      background: T.surfaceHi,
+    }}>
+      {children}
+    </th>
+  );
+}
+
+function Td({ children, muted }: { children: React.ReactNode; muted?: boolean }) {
+  return (
+    <td style={{
+      padding: "12px 16px",
+      fontSize: 13, color: muted ? T.textLow : T.textMid,
+      borderBottom: `1px solid ${T.border}`,
+      verticalAlign: "middle",
+    }}>
+      {children}
+    </td>
+  );
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      <span style={{ fontSize: 11, color: T.textLow, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase" }}>
         {children}
+      </span>
+    </label>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  background: T.surfaceHi, border: `1px solid ${T.borderHi}`,
+  borderRadius: T.radiusSm, padding: "9px 12px",
+  color: T.text, fontSize: 14, outline: "none",
+  width: "100%", boxSizing: "border-box",
+  transition: "border-color 0.15s",
+};
+
+function FInput({ label, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <FieldLabel>
+      {label}
+      <input
+        {...props}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        style={{ ...inputStyle, borderColor: focused ? T.accent : T.borderHi, ...props.style }}
+      />
+    </FieldLabel>
+  );
+}
+
+function FSelect({ label, options, valueLabels, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & {
+  label: string; options: string[]; valueLabels?: Record<string, string>;
+}) {
+  return (
+    <FieldLabel>
+      {label}
+      <select {...props} style={{ ...inputStyle, cursor: "pointer" }}>
+        {options.map((o) => (
+          <option key={o} value={o} style={{ background: T.surface }}>
+            {valueLabels?.[o] ?? o.replace(/_/g, " ")}
+          </option>
+        ))}
       </select>
+    </FieldLabel>
+  );
+}
+
+function Btn({
+  children, variant = "primary", style: s, ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "danger" | "subtle" }) {
+  const vs: Record<string, React.CSSProperties> = {
+    primary: { background: T.accent, color: "#fff", border: "none" },
+    ghost:   { background: "transparent", color: T.textMid, border: `1px solid ${T.border}` },
+    danger:  { background: "rgba(248,113,113,0.1)", color: "#f87171", border: "1px solid rgba(248,113,113,0.2)" },
+    subtle:  { background: T.surfaceHi, color: T.textMid, border: `1px solid ${T.border}` },
+  };
+  return (
+    <button {...props} style={{
+      ...vs[variant],
+      padding: "8px 16px", borderRadius: T.radiusSm,
+      fontSize: 13, fontWeight: 600, cursor: "pointer",
+      display: "inline-flex", alignItems: "center", gap: 6,
+      transition: "opacity 0.15s, background 0.15s",
+      opacity: props.disabled ? 0.4 : 1,
+      pointerEvents: props.disabled ? "none" : "auto",
+      ...s,
+    }}>
+      {children}
+    </button>
+  );
+}
+
+function SectionHead({ title, action }: { title: string; action?: React.ReactNode }) {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+      padding: "16px 20px", borderBottom: `1px solid ${T.border}`,
+    }}>
+      <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{title}</span>
+      {action}
     </div>
   );
 }
 
-export default function App() {
-  const [page, setPage] = useState('dashboard');
-  const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [summary, setSummary] = useState<any>(null);
-  const [analyses, setAnalyses] = useState<Record<string, Analysis>>({});
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div style={{ padding: "48px 24px", textAlign: "center" }}>
+      <i className="ti ti-inbox" style={{ fontSize: 32, color: T.textLow, display: "block", marginBottom: 12 }} aria-hidden />
+      <span style={{ fontSize: 13, color: T.textLow }}>{message}</span>
+    </div>
+  );
+}
+
+function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
+  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
+  return (
+    <div style={{
+      position: "fixed", bottom: 24, right: 24, zIndex: 999,
+      background: T.surfaceHi, border: `1px solid ${T.border}`,
+      borderLeft: `3px solid ${T.accent}`,
+      borderRadius: T.radiusSm, padding: "12px 16px",
+      fontSize: 13, color: T.text,
+      display: "flex", alignItems: "center", gap: 10,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+    }}>
+      <i className="ti ti-check" style={{ color: "#34d399", fontSize: 16 }} aria-hidden />
+      {msg}
+      <button onClick={onClose} style={{ background: "none", border: "none", color: T.textLow, cursor: "pointer", marginLeft: 8, fontSize: 14 }}>✕</button>
+    </div>
+  );
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+
+function DashboardPage({ goTo }: { goTo: (p: Page) => void }) {
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [bulkAnalysis, setBulkAnalysis] = useState<Analysis[]>([]);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    Promise.all([
+      apiFetch<Summary>("/api/decisions/summary").catch(() => null),
+      apiFetch<Analysis[]>("/api/decisions/bulk-analysis").catch(() => []),
+    ]).then(([s, b]) => {
+      if (s) setSummary(s);
+      if (b) setBulkAnalysis(Array.isArray(b) ? b : []);
+      setLoading(false);
+    });
+  }, []);
 
-  async function loadData() {
+  if (loading) return <Spinner />;
+  if (!summary) return <div style={{ color: "#f87171", padding: 20 }}>Could not load dashboard.</div>;
+
+  const chartData = bulkAnalysis
+    .filter(a => a.roi > 0)
+    .slice(0, 8)
+    .map((a, i) => ({ name: `D${i + 1}`, roi: parseFloat(a.roi.toFixed(2)), rec: a.recommendation }));
+
+  const recColors: Record<Recommendation, string> = {
+    SCALE: "#34d399", MAINTAIN: "#818cf8", MONITOR: "#fbbf24", KILL: "#f87171", NO_DATA: "#4b5563"
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* KPIs */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <KpiCard value={String(summary.total_decisions)} label="Total decisions" sub="All time" icon="ti-layers-linked" />
+        <KpiCard value={String(summary.scale_worthy)} label="Scale worthy" sub="ROI › 3x + confidence" color="#34d399" icon="ti-trending-up" />
+        <KpiCard value={String(summary.need_action)} label="Need action" sub="Low ROI confirmed" color="#f87171" icon="ti-alert-triangle" />
+        <KpiCard value={`${(summary.avg_roi ?? 0).toFixed(2)}x`} label="Avg weighted ROI" sub="Time-decay adjusted" color={T.accentHi} icon="ti-chart-line" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {/* ROI Chart */}
+        {chartData.length > 0 && (
+          <TableWrap>
+            <SectionHead title="ROI by decision" />
+            <div style={{ padding: "16px 8px 8px" }}>
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={chartData} barSize={28}>
+                  <XAxis dataKey="name" tick={{ fill: T.textLow, fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: T.textLow, fontSize: 11 }} axisLine={false} tickLine={false} width={36} />
+                  <Tooltip
+                    contentStyle={{ background: T.surfaceHi, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 12 }}
+                    labelStyle={{ color: T.textMid }}
+                    itemStyle={{ color: T.text }}
+                  />
+                  <Bar dataKey="roi" radius={[4, 4, 0, 0]}>
+                    {chartData.map((entry, i) => (
+                      <Cell key={i} fill={recColors[entry.rec] ?? T.accent} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </TableWrap>
+        )}
+
+        {/* Recommendation breakdown */}
+        <TableWrap>
+          <SectionHead title="Recommendation breakdown" />
+          <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+            {(["SCALE", "MAINTAIN", "MONITOR", "KILL", "NO_DATA"] as Recommendation[]).map(rec => {
+              const count = bulkAnalysis.filter(a => a.recommendation === rec).length;
+              const total = bulkAnalysis.length || 1;
+              const pct = Math.round((count / total) * 100);
+              const m = REC_META[rec];
+              return (
+                <div key={rec}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                    <span style={{ fontSize: 12, color: T.textMid, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ color: m.color }}>{m.icon}</span> {m.label}
+                    </span>
+                    <span style={{ fontSize: 12, color: T.textLow }}>{count}</span>
+                  </div>
+                  <div style={{ background: T.surfaceHi, borderRadius: 4, height: 4, overflow: "hidden" }}>
+                    <div style={{ width: `${pct}%`, height: "100%", background: m.color, borderRadius: 4, transition: "width 0.6s ease" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </TableWrap>
+      </div>
+
+      {/* Recent decisions table */}
+      <TableWrap>
+        <SectionHead
+          title="Recent decisions"
+          action={
+            <button onClick={() => goTo("decisions")} style={{ background: "none", border: "none", color: T.accent, fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+              View all →
+            </button>
+          }
+        />
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <Th>Type</Th>
+              <Th>Owner</Th>
+              <Th>Cost</Th>
+              <Th>ROI</Th>
+              <Th>Status</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {(summary.recent_decisions ?? []).map((d) => (
+              <tr key={d.id} style={{ cursor: "default" }}>
+                <Td><TypePill type={d.type} /></Td>
+                <Td>{d.owner}</Td>
+                <Td muted>{fmt(d.cost_amount)}</Td>
+                <Td>
+                  <span style={{ color: d.roi ? T.accentHi : T.textLow, fontWeight: d.roi ? 600 : 400, fontVariantNumeric: "tabular-nums" }}>
+                    {d.roi ? fmtROI(d.roi) : "—"}
+                  </span>
+                </Td>
+                <Td><RecBadge rec={(d.recommendation as Recommendation) ?? "NO_DATA"} /></Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {(!summary.recent_decisions || summary.recent_decisions.length === 0) && (
+          <EmptyState message="No decisions yet — add your first one" />
+        )}
+      </TableWrap>
+    </div>
+  );
+}
+
+// ─── Decisions list ───────────────────────────────────────────────────────────
+
+function DecisionsPage({ goTo }: { goTo: (p: Page) => void }) {
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [filterType, setFilterType] = useState("");
+  const [search, setSearch] = useState("");
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [toast, setToast] = useState("");
+
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [d, s] = await Promise.all([getDecisions(), getSummary()]);
-      setDecisions(d); setSummary(s);
-      const map: Record<string, Analysis> = {};
-      for (const dec of d) { try { map[dec.id] = await getAnalysis(dec.id); } catch {} }
-      setAnalyses(map);
-    } catch {}
-    setLoading(false);
-  }
+      const p = new URLSearchParams({ page: String(page), page_size: "15" });
+      if (filterType) p.set("type", filterType);
+      if (search) p.set("search", search);
+      const data = await apiFetch<{ items: Decision[]; pagination: { total_pages: number } }>(`/api/decisions/?${p}`);
+      setDecisions(data.items ?? []);
+      setTotalPages(data.pagination?.total_pages ?? 1);
+    } catch { /* silent */ }
+    finally { setLoading(false); }
+  }, [page, filterType, search]);
 
-  function showToast(msg: string, type: 'success' | 'error') {
-    setToast({ msg, type }); setTimeout(() => setToast(null), 3000);
-  }
+  useEffect(() => { load(); }, [load]);
 
-  const nav = [
-    { icon: '▣', label: 'Dashboard',    page: 'dashboard',    sub: 'Overview & stats' },
-    { icon: '≡', label: 'Decisions',    page: 'decisions',    sub: 'All decisions' },
-    { icon: '◎', label: 'Analysis',     page: 'analysis',     sub: 'ROI breakdown' },
-    { icon: '+', label: 'Add Decision', page: 'add-decision', sub: 'New entry' },
-    { icon: '↑', label: 'Add Outcome',  page: 'add-outcome',  sub: 'Link revenue' },
-    { icon: '⇑', label: 'CSV Upload',   page: 'upload',       sub: 'Bulk import' },
-  ];
-
-  return (
-    <div className="flex h-screen overflow-hidden" style={{ background: '#060912' }}>
-      {sidebarOpen && <div className="fixed inset-0 bg-black/70 z-40 lg:hidden backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />}
-
-      {/* Sidebar */}
-      <aside className={`fixed lg:static top-0 left-0 h-full z-50 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
-        style={{ width: '240px', background: '#0a0e1a', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
-
-        <div className="px-5 py-6">
-          <div className="flex items-center gap-3 mb-8">
-            <div style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', borderRadius: '10px', width: '34px', height: '34px' }}
-              className="flex items-center justify-center text-white text-sm font-bold flex-shrink-0">G</div>
-            <div>
-              <div className="text-sm font-semibold text-slate-100">GTM Tracker</div>
-              <div className="text-xs text-slate-500">Attribution Engine</div>
-            </div>
-          </div>
-
-          <div className="space-y-0.5">
-            {nav.map(item => (
-              <button key={item.page} onClick={() => { setPage(item.page); setSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all group ${
-                  page === item.page
-                    ? 'bg-indigo-500/15 text-indigo-300'
-                    : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'
-                }`}>
-                <span className={`text-xs w-4 text-center font-mono ${page === item.page ? 'text-indigo-400' : 'text-slate-600 group-hover:text-slate-400'}`}>
-                  {item.icon}
-                </span>
-                <div>
-                  <div className="text-xs font-medium">{item.label}</div>
-                </div>
-                {page === item.page && <div className="ml-auto w-1 h-4 rounded-full bg-indigo-500" />}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="absolute bottom-0 left-0 right-0 px-5 py-4" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-          <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 text-xs text-slate-600 hover:text-slate-400 transition-colors">
-            <span>↗</span> API Documentation
-          </a>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="flex items-center justify-between px-8 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: '#060912' }}>
-          <div className="flex items-center gap-4">
-            <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-slate-500 hover:text-slate-300">☰</button>
-            <div>
-              <h1 className="text-sm font-semibold text-slate-100">{nav.find(n => n.page === page)?.label}</h1>
-              <p className="text-xs text-slate-500">{nav.find(n => n.page === page)?.sub}</p>
-            </div>
-          </div>
-          <button onClick={() => setPage('add-decision')}
-            style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-            className="text-white px-4 py-2 rounded-xl text-xs font-semibold hover:opacity-90 transition-opacity shadow-lg">
-            + New Decision
-          </button>
-        </header>
-
-        <main className="flex-1 overflow-y-auto px-8 py-6">
-          {loading ? (
-            <div className="flex items-center justify-center h-64">
-              <div className="flex flex-col items-center gap-3">
-                <div className="w-6 h-6 border-2 border-slate-700 border-t-indigo-500 rounded-full animate-spin" />
-                <span className="text-xs text-slate-500">Loading data...</span>
-              </div>
-            </div>
-          ) : (
-            <>
-              {page === 'dashboard'    && <Dashboard decisions={decisions} summary={summary} analyses={analyses} onNavigate={setPage} />}
-              {page === 'decisions'    && <DecisionsList decisions={decisions} analyses={analyses} onNavigate={setPage} onDelete={async (id: string) => { await deleteDecision(id); showToast('Decision deleted', 'success'); loadData(); }} />}
-              {page === 'analysis'     && <AnalysisPage decisions={decisions} />}
-              {page === 'add-decision' && <AddDecisionForm onSuccess={() => { showToast('Decision created!', 'success'); loadData(); setPage('decisions'); }} />}
-              {page === 'add-outcome'  && <AddOutcomeForm decisions={decisions} onSuccess={() => { showToast('Outcome added!', 'success'); loadData(); }} />}
-              {page === 'upload'       && <UploadPage onSuccess={() => { showToast('CSV uploaded!', 'success'); loadData(); setPage('decisions'); }} />}
-            </>
-          )}
-        </main>
-      </div>
-
-      {toast && (
-        <div className={`fixed bottom-6 right-6 flex items-center gap-2.5 px-4 py-3 rounded-xl text-sm font-medium shadow-2xl z-50 border
-          ${toast.type === 'success' ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-red-950 text-red-300 border-red-800'}`}>
-          <span className={`w-2 h-2 rounded-full ${toast.type === 'success' ? 'bg-emerald-400' : 'bg-red-400'}`} />
-          {toast.msg}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Dashboard({ decisions, summary, analyses, onNavigate }: any) {
-  const stats = [
-    { label: 'Total Decisions', value: summary?.total_decisions ?? 0, sub: 'All time', color: '#6366f1' },
-    { label: 'Scale Worthy',    value: summary?.recommendations?.SCALE ?? 0, sub: 'High ROI', color: '#10b981' },
-    { label: 'Need Action',     value: summary?.recommendations?.KILL ?? 0, sub: 'Low ROI', color: '#f43f5e' },
-    { label: 'Avg ROI',         value: `${summary?.average_roi ?? 0}x`, sub: 'Weighted', color: '#f59e0b' },
-  ];
+  const del = async (id: string) => {
+    if (!confirm("Delete this decision and all its outcomes?")) return;
+    setDeleting(id);
+    try {
+      await apiFetch(`/api/decisions/${id}`, { method: "DELETE" });
+      setDecisions(prev => prev.filter(d => d.id !== id));
+      setToast("Decision deleted");
+    } catch { alert("Delete failed."); }
+    finally { setDeleting(null); }
+  };
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map(s => (
-          <div key={s.label} style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)' }} className="rounded-2xl p-5">
-            <div className="text-2xl font-bold mb-1" style={{ color: s.color }}>{s.value}</div>
-            <div className="text-xs font-medium text-slate-300">{s.label}</div>
-            <div className="text-xs text-slate-600 mt-0.5">{s.sub}</div>
-          </div>
-        ))}
-      </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {toast && <Toast msg={toast} onClose={() => setToast("")} />}
 
-      <div style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)' }} className="rounded-2xl">
-        <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100">Recent Decisions</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Latest activity</p>
-          </div>
-          <button onClick={() => onNavigate('decisions')} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium">
-            View all →
-          </button>
+      {/* Filters row */}
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <FInput label="Search" placeholder="Search owner or description…" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} />
         </div>
-
-        {decisions.length === 0 ? (
-          <div className="text-center py-16">
-            <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: '#131929' }}>
-              <span className="text-2xl">📋</span>
-            </div>
-            <p className="text-sm text-slate-400 mb-1">No decisions yet</p>
-            <p className="text-xs text-slate-600 mb-5">Start tracking your GTM decisions</p>
-            <button onClick={() => onNavigate('add-decision')}
-              style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-              className="text-white px-5 py-2.5 rounded-xl text-xs font-semibold hover:opacity-90 transition-opacity">
-              + Add First Decision
-            </button>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                  {['Decision', 'Owner', 'Cost', 'ROI', 'Status'].map(h => (
-                    <th key={h} className="text-left px-6 py-3 text-xs font-medium text-slate-500">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {decisions.slice(-5).reverse().map((d: Decision) => (
-                  <tr key={d.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="px-6 py-3.5"><TypeBadge type={d.type} /></td>
-                    <td className="px-6 py-3.5 text-xs text-slate-300">{d.owner}</td>
-                    <td className="px-6 py-3.5 text-xs font-mono text-slate-400">{formatCurrency(d.cost_amount)}</td>
-                    <td className="px-6 py-3.5 text-xs font-bold" style={{ color: '#f59e0b' }}>{analyses[d.id] ? `${analyses[d.id].roi}x` : '—'}</td>
-                    <td className="px-6 py-3.5">{analyses[d.id] ? <RecBadge rec={analyses[d.id].recommendation} /> : <span className="text-xs text-slate-600">No outcomes</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function DecisionsList({ decisions, analyses, onNavigate, onDelete }: any) {
-  return (
-    <div className="max-w-5xl" style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)' , borderRadius: '16px'}}>
-      <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-        <div>
-          <h2 className="text-sm font-semibold text-slate-100">All Decisions</h2>
-          <p className="text-xs text-slate-500 mt-0.5">{decisions.length} total</p>
+        <div style={{ minWidth: 140 }}>
+          <FSelect label="Type" options={["", ...DECISION_TYPES]} valueLabels={{ "": "All types", hire: "Hire", ad_spend: "Ad Spend", vendor: "Vendor", tool: "Tool" }} value={filterType} onChange={e => { setFilterType(e.target.value); setPage(1); }} />
         </div>
-        <button onClick={() => onNavigate('add-decision')}
-          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-          className="text-white px-3.5 py-2 rounded-xl text-xs font-semibold hover:opacity-90 transition-opacity">
-          + Add
-        </button>
+        <Btn variant="subtle" onClick={() => goTo("add-decision")}>
+          <i className="ti ti-plus" aria-hidden /> New
+        </Btn>
       </div>
-      {decisions.length === 0 ? (
-        <div className="text-center py-16 text-slate-500 text-sm">No decisions yet</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full">
+
+      <TableWrap>
+        {loading ? <Spinner /> : (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                {['Type', 'Owner', 'Cost', 'Date', 'ROI', 'Confidence', 'Rec', ''].map(h => (
-                  <th key={h} className="text-left px-6 py-3 text-xs font-medium text-slate-500">{h}</th>
-                ))}
+              <tr>
+                <Th>Type</Th>
+                <Th>Owner</Th>
+                <Th>Cost</Th>
+                <Th>Date</Th>
+                <Th>Description</Th>
+                <Th></Th>
               </tr>
             </thead>
             <tbody>
-              {decisions.map((d: Decision) => (
-                <tr key={d.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }} className="hover:bg-white/[0.02] transition-colors group">
-                  <td className="px-6 py-3.5"><TypeBadge type={d.type} /></td>
-                  <td className="px-6 py-3.5 text-xs text-slate-300">{d.owner}</td>
-                  <td className="px-6 py-3.5 text-xs font-mono text-slate-400">{formatCurrency(d.cost_amount)}</td>
-                  <td className="px-6 py-3.5 text-xs text-slate-500">{formatDate(d.date)}</td>
-                  <td className="px-6 py-3.5 text-xs font-bold" style={{ color: '#f59e0b' }}>{analyses[d.id] ? `${analyses[d.id].roi}x` : '—'}</td>
-                  <td className="px-6 py-3.5">
-                    {analyses[d.id] ? (
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 bg-slate-800 rounded-full h-1.5 w-16">
-                          <div className="h-1.5 rounded-full bg-indigo-500" style={{ width: `${analyses[d.id].confidence * 100}%` }} />
-                        </div>
-                        <span className="text-xs text-slate-500">{(analyses[d.id].confidence * 100).toFixed(0)}%</span>
-                      </div>
-                    ) : '—'}
-                  </td>
-                  <td className="px-6 py-3.5">{analyses[d.id] ? <RecBadge rec={analyses[d.id].recommendation} /> : <span className="text-xs text-slate-600">—</span>}</td>
-                  <td className="px-6 py-3.5">
-                    <button onClick={() => onDelete(d.id)} className="opacity-0 group-hover:opacity-100 text-xs text-slate-600 hover:text-red-400 transition-all">
-                      delete
-                    </button>
-                  </td>
+              {decisions.map(d => (
+                <tr key={d.id} style={{ transition: "background 0.1s" }}
+                  onMouseOver={e => (e.currentTarget.style.background = T.surfaceHi)}
+                  onMouseOut={e => (e.currentTarget.style.background = "transparent")}
+                >
+                  <Td><TypePill type={d.type} /></Td>
+                  <Td>{d.owner}</Td>
+                  <Td muted>{fmt(d.cost_amount)}</Td>
+                  <Td muted>{new Date(d.date).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</Td>
+                  <Td muted>
+                    <span style={{ display: "block", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {d.description || "—"}
+                    </span>
+                  </Td>
+                  <Td>
+                    <Btn variant="danger" style={{ padding: "4px 12px", fontSize: 12 }} disabled={deleting === d.id} onClick={() => del(d.id)}>
+                      {deleting === d.id ? "…" : <><i className="ti ti-trash" aria-hidden /> Delete</>}
+                    </Btn>
+                  </Td>
                 </tr>
               ))}
             </tbody>
           </table>
+        )}
+        {!loading && decisions.length === 0 && <EmptyState message="No decisions found" />}
+      </TableWrap>
+
+      {totalPages > 1 && (
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", alignItems: "center" }}>
+          <Btn variant="ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)} style={{ padding: "6px 14px" }}>
+            <i className="ti ti-chevron-left" aria-hidden />
+          </Btn>
+          <span style={{ fontSize: 12, color: T.textLow }}>Page {page} of {totalPages}</span>
+          <Btn variant="ghost" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} style={{ padding: "6px 14px" }}>
+            <i className="ti ti-chevron-right" aria-hidden />
+          </Btn>
         </div>
       )}
     </div>
   );
 }
 
-function AnalysisPage({ decisions }: any) {
-  const [selected, setSelected] = useState('');
+// ─── Analysis ────────────────────────────────────────────────────────────────
+
+function AnalysisPage() {
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [selectedId, setSelectedId] = useState("");
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [loading, setLoading] = useState(false);
+  const [outcomes, setOutcomes] = useState<{ metric_type: string; value: number; date: string }[]>([]);
 
-  async function run() {
-    if (!selected) return;
+  useEffect(() => {
+    apiFetch<{ items: Decision[] }>("/api/decisions/?page_size=100")
+      .then(d => setDecisions(d.items ?? []))
+      .catch(() => {});
+  }, []);
+
+  const run = async () => {
+    if (!selectedId) return;
     setLoading(true);
-    try { setAnalysis(await getAnalysis(selected)); } catch {}
-    setLoading(false);
-  }
+    setAnalysis(null);
+    setOutcomes([]);
+    try {
+      const [a, o] = await Promise.all([
+        apiFetch<Analysis>(`/api/decisions/${selectedId}/analysis`),
+        apiFetch<{ metric_type: string; value: number; date: string }[]>(`/api/outcomes/${selectedId}`).catch(() => []),
+      ]);
+      setAnalysis(a);
+      setOutcomes(Array.isArray(o) ? o : []);
+    } catch { alert("Analysis failed."); }
+    finally { setLoading(false); }
+  };
+
+  const chosen = decisions.find(d => d.id === selectedId);
+  const rec = analysis ? REC_META[analysis.recommendation] ?? REC_META.NO_DATA : null;
+
+  const chartData = outcomes.map(o => ({
+    date: new Date(o.date).toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+    value: o.value,
+    type: o.metric_type,
+  }));
 
   return (
-    <div className="max-w-lg space-y-4">
-      <div style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px' }} className="p-6 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-100">ROI Analysis</h2>
-          <p className="text-xs text-slate-500 mt-1">Select a decision to see attribution breakdown</p>
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+        <div style={{ flex: 1 }}>
+          <FSelect
+            label="Select decision"
+            options={["", ...decisions.map(d => d.id)]}
+            valueLabels={Object.fromEntries([["", "Choose a decision…"], ...decisions.map(d => [d.id, `[${d.type.replace("_", " ")}] ${d.owner} — ${fmt(d.cost_amount)}`])])}
+            value={selectedId}
+            onChange={e => { setSelectedId(e.target.value); setAnalysis(null); }}
+          />
         </div>
-        <Select label="Decision" value={selected} onChange={(e: any) => setSelected(e.target.value)}>
-          <option value="">Choose a decision...</option>
-          {decisions.map((d: Decision) => (
-            <option key={d.id} value={d.id}>{d.type.replace('_',' ')} — {d.owner} — {formatCurrency(d.cost_amount)}</option>
-          ))}
-        </Select>
-        <button onClick={run} disabled={!selected || loading}
-          style={{ background: selected ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : undefined }}
-          className={`w-full py-2.5 rounded-xl text-xs font-semibold transition-all ${selected ? 'text-white hover:opacity-90' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}>
-          {loading ? 'Calculating...' : 'Run Analysis'}
-        </button>
+        <Btn onClick={run} disabled={!selectedId || loading}>
+          {loading ? "Running…" : <><i className="ti ti-chart-dots-3" aria-hidden /> Analyse</>}
+        </Btn>
       </div>
 
-      {analysis && (
-        <div style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px' }} className="p-6 space-y-5">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-slate-100">Result</div>
-            <RecBadge rec={analysis.recommendation} />
-          </div>
+      {loading && <Spinner />}
 
-          {[
-            { label: 'ROI', value: `${analysis.roi}x`, pct: Math.min(analysis.roi / 5 * 100, 100), color: '#f59e0b' },
-            { label: 'Confidence', value: `${(analysis.confidence * 100).toFixed(0)}%`, pct: analysis.confidence * 100, color: '#6366f1' },
-          ].map(m => (
-            <div key={m.label}>
-              <div className="flex justify-between mb-2">
-                <span className="text-xs text-slate-500">{m.label}</span>
-                <span className="text-xs font-bold" style={{ color: m.color }}>{m.value}</span>
-              </div>
-              <div className="bg-slate-800/60 rounded-full h-1.5">
-                <div className="h-1.5 rounded-full transition-all duration-700" style={{ width: `${m.pct}%`, background: m.color }} />
-              </div>
+      {analysis && rec && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Hero rec card */}
+          <div style={{
+            background: `${rec.color}0d`, border: `1px solid ${rec.color}26`,
+            borderRadius: T.radius, padding: "24px 28px",
+            display: "flex", gap: 20, alignItems: "center",
+          }}>
+            <div style={{
+              width: 52, height: 52, borderRadius: T.radius,
+              background: rec.bg, display: "flex", alignItems: "center",
+              justifyContent: "center", fontSize: 22, color: rec.color, flexShrink: 0,
+              border: `1px solid ${rec.color}33`,
+            }}>
+              {rec.icon}
             </div>
-          ))}
-
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              { label: 'Data Points', value: analysis.outcomes_count },
-              { label: 'Source', value: analysis.from_cache ? '⚡ Redis Cache' : '🔄 Computed' },
-            ].map(item => (
-              <div key={item.label} style={{ background: '#0a0e1a', borderRadius: '10px' }} className="p-3">
-                <div className="text-xs text-slate-500 mb-1">{item.label}</div>
-                <div className="text-xs font-semibold text-slate-200">{item.value}</div>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: rec.color, letterSpacing: "-0.02em" }}>
+                {rec.label}
               </div>
-            ))}
+              {analysis.explanation && (
+                <div style={{ fontSize: 13, color: T.textMid, marginTop: 5, maxWidth: 500, lineHeight: 1.6 }}>
+                  {analysis.explanation}
+                </div>
+              )}
+              {chosen && (
+                <div style={{ fontSize: 12, color: T.textLow, marginTop: 6 }}>
+                  {chosen.owner} · {chosen.type.replace("_", " ")} · {fmt(chosen.cost_amount)}
+                </div>
+              )}
+            </div>
           </div>
 
-          <div style={{ background: '#0a0e1a', borderRadius: '10px' }} className="p-4 text-xs text-slate-400 leading-relaxed">
-            {analysis.recommendation === 'SCALE'    && '↑ Strong ROI with high confidence. Increase investment in this decision.'}
-            {analysis.recommendation === 'KILL'     && '↓ Poor ROI confirmed. Reallocate budget to higher performing decisions.'}
-            {analysis.recommendation === 'MONITOR'  && '◎ Insufficient data. Add more outcomes to improve confidence score.'}
-            {analysis.recommendation === 'MAINTAIN' && '→ Performing as expected. No immediate action required.'}
+          {/* Metric cards */}
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <KpiCard value={fmtROI(analysis.roi)} label="ROI" sub="Weighted by time decay" color={T.accentHi} />
+            <KpiCard value={`${(analysis.confidence * 100).toFixed(0)}%`} label="Confidence" sub="Based on outcome count + consistency" color="#34d399" />
+            <KpiCard value={String(analysis.outcome_count)} label="Linked outcomes" />
+            {analysis.weighted_revenue !== undefined && (
+              <KpiCard value={fmt(analysis.weighted_revenue)} label="Weighted revenue" color="#fbbf24" />
+            )}
           </div>
+
+          {/* Outcomes timeline */}
+          {chartData.length > 0 && (
+            <TableWrap>
+              <SectionHead title="Outcome timeline" />
+              <div style={{ padding: "16px 8px 8px" }}>
+                <ResponsiveContainer width="100%" height={160}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} />
+                    <XAxis dataKey="date" tick={{ fill: T.textLow, fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: T.textLow, fontSize: 11 }} axisLine={false} tickLine={false} width={60}
+                      tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+                    <Tooltip
+                      contentStyle={{ background: T.surfaceHi, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 12 }}
+                      formatter={(v: number) => [fmt(v), "Value"]}
+                    />
+                    <Line type="monotone" dataKey="value" stroke={T.accent} strokeWidth={2} dot={{ fill: T.accent, r: 4 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </TableWrap>
+          )}
+
+          {analysis.from_cache && (
+            <div style={{ fontSize: 11, color: T.textLow, display: "flex", alignItems: "center", gap: 5 }}>
+              <i className="ti ti-bolt" style={{ fontSize: 12 }} aria-hidden /> Served from cache
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function AddDecisionForm({ onSuccess }: any) {
-  const [form, setForm] = useState({ type: 'hire', owner: '', cost_amount: '', description: '', date: '' });
-  const [loading, setLoading] = useState(false);
+// ─── Add Decision ─────────────────────────────────────────────────────────────
 
-  async function submit() {
-    if (!form.owner || !form.cost_amount || !form.date) return alert('Fill all required fields');
+function AddDecisionPage({ goTo }: { goTo: (p: Page) => void }) {
+  const [form, setForm] = useState({ type: "hire" as DecisionType, owner: "", cost_amount: "", date: new Date().toISOString().split("T")[0], description: "" });
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState("");
+
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    if (!form.owner.trim() || !form.cost_amount) return alert("Owner and cost are required.");
     setLoading(true);
-    try { await createDecision({ ...form, cost_amount: parseFloat(form.cost_amount), date: form.date + 'T00:00:00' }); onSuccess(); }
-    catch {} setLoading(false);
-  }
+    try {
+      await apiFetch("/api/decisions/", {
+        method: "POST",
+        body: JSON.stringify({ ...form, cost_amount: parseFloat(form.cost_amount) }),
+      });
+      setToast("Decision created successfully");
+      setForm({ type: "hire", owner: "", cost_amount: "", date: new Date().toISOString().split("T")[0], description: "" });
+      setTimeout(() => goTo("decisions"), 1400);
+    } catch { alert("Failed to create decision."); }
+    finally { setLoading(false); }
+  };
 
   return (
-    <div className="max-w-md">
-      <div style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px' }} className="p-6 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-100">New Decision</h2>
-          <p className="text-xs text-slate-500 mt-1">Track a new GTM decision and its cost</p>
+    <div style={{ maxWidth: 480 }}>
+      {toast && <Toast msg={toast} onClose={() => setToast("")} />}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, padding: 24, display: "flex", flexDirection: "column", gap: 18 }}>
+        <FSelect label="Type" options={DECISION_TYPES} value={form.type} onChange={e => set("type", e.target.value)} />
+        <FInput label="Owner" placeholder="e.g. Sales Team" value={form.owner} onChange={e => set("owner", e.target.value)} />
+        <FInput label="Cost (USD)" type="number" placeholder="50000" value={form.cost_amount} onChange={e => set("cost_amount", e.target.value)} />
+        <FInput label="Date" type="date" value={form.date} onChange={e => set("date", e.target.value)} />
+        <FInput label="Description (optional)" placeholder="What was this spend for?" value={form.description} onChange={e => set("description", e.target.value)} />
+        <div style={{ display: "flex", gap: 10, paddingTop: 4 }}>
+          <Btn onClick={submit} disabled={loading}>
+            {loading ? "Saving…" : <><i className="ti ti-check" aria-hidden /> Add Decision</>}
+          </Btn>
+          <Btn variant="ghost" onClick={() => goTo("decisions")}>Cancel</Btn>
         </div>
-        <Select label="Type" name="type" value={form.type} onChange={(e: any) => setForm(p => ({ ...p, type: e.target.value }))}>
-          {[['hire','👤 Hire'],['ad_spend','📢 Ad Spend'],['vendor','🤝 Vendor'],['tool','🔧 Tool']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
-        </Select>
-        <Input label="Owner *" name="owner" value={form.owner} placeholder="e.g. Sales Team" onChange={(e: any) => setForm(p => ({ ...p, owner: e.target.value }))} />
-        <Input label="Cost (USD) *" name="cost_amount" type="number" value={form.cost_amount} placeholder="8000" onChange={(e: any) => setForm(p => ({ ...p, cost_amount: e.target.value }))} />
-        <Input label="Date *" name="date" type="date" value={form.date} onChange={(e: any) => setForm(p => ({ ...p, date: e.target.value }))} />
-        <Input label="Description" name="description" value={form.description} placeholder="SDR hire for Q1 pipeline" onChange={(e: any) => setForm(p => ({ ...p, description: e.target.value }))} />
-        <button onClick={submit} disabled={loading}
-          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-          className="w-full py-2.5 rounded-xl text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-all">
-          {loading ? 'Creating...' : 'Create Decision'}
-        </button>
       </div>
     </div>
   );
 }
 
-function AddOutcomeForm({ decisions, onSuccess }: any) {
-  const [form, setForm] = useState({ decision_id: '', metric_type: 'revenue', value: '', date: '', source: 'manual' });
-  const [loading, setLoading] = useState(false);
+// ─── Add Outcome ──────────────────────────────────────────────────────────────
 
-  async function submit() {
-    if (!form.decision_id || !form.value || !form.date) return alert('Fill all required fields');
+function AddOutcomePage() {
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [form, setForm] = useState({ decision_id: "", metric_type: "revenue" as MetricType, value: "", date: new Date().toISOString().split("T")[0], source: "manual" });
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    apiFetch<{ items: Decision[] }>("/api/decisions/?page_size=100")
+      .then(d => setDecisions(d.items ?? []))
+      .catch(() => {});
+  }, []);
+
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    if (!form.decision_id || !form.value) return alert("Decision and value are required.");
     setLoading(true);
-    try { await createOutcome({ ...form, value: parseFloat(form.value), date: form.date + 'T00:00:00' }); onSuccess(); }
-    catch {} setLoading(false);
-  }
+    try {
+      await apiFetch("/api/outcomes/", {
+        method: "POST",
+        body: JSON.stringify({ ...form, value: parseFloat(form.value) }),
+      });
+      setToast("Outcome linked successfully");
+      setForm(f => ({ ...f, value: "" }));
+    } catch { alert("Failed to add outcome."); }
+    finally { setLoading(false); }
+  };
 
   return (
-    <div className="max-w-md">
-      <div style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px' }} className="p-6 space-y-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-100">Add Outcome</h2>
-          <p className="text-xs text-slate-500 mt-1">Link revenue or pipeline back to a decision</p>
+    <div style={{ maxWidth: 480 }}>
+      {toast && <Toast msg={toast} onClose={() => setToast("")} />}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, padding: 24, display: "flex", flexDirection: "column", gap: 18 }}>
+        <FSelect
+          label="Decision"
+          options={["", ...decisions.map(d => d.id)]}
+          valueLabels={Object.fromEntries([["", "Select a decision…"], ...decisions.map(d => [d.id, `[${d.type.replace("_", " ")}] ${d.owner} — ${fmt(d.cost_amount)}`])])}
+          value={form.decision_id}
+          onChange={e => set("decision_id", e.target.value)}
+        />
+        <FSelect label="Metric type" options={METRIC_TYPES} value={form.metric_type} onChange={e => set("metric_type", e.target.value)} />
+        <FInput label="Value (USD)" type="number" placeholder="120000" value={form.value} onChange={e => set("value", e.target.value)} />
+        <FInput label="Date" type="date" value={form.date} onChange={e => set("date", e.target.value)} />
+        <div style={{ paddingTop: 4 }}>
+          <Btn onClick={submit} disabled={loading}>
+            {loading ? "Saving…" : <><i className="ti ti-link" aria-hidden /> Link Outcome</>}
+          </Btn>
         </div>
-        <Select label="Decision *" value={form.decision_id} onChange={(e: any) => setForm(p => ({ ...p, decision_id: e.target.value }))}>
-          <option value="">Select decision...</option>
-          {decisions.map((d: Decision) => <option key={d.id} value={d.id}>{d.type.replace('_',' ')} — {d.owner} — {formatCurrency(d.cost_amount)}</option>)}
-        </Select>
-        <Select label="Metric" value={form.metric_type} onChange={(e: any) => setForm(p => ({ ...p, metric_type: e.target.value }))}>
-          {[['revenue','💰 Revenue'],['pipeline','📊 Pipeline'],['churn','📉 Churn']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
-        </Select>
-        <Input label="Value (USD) *" type="number" value={form.value} placeholder="25000" onChange={(e: any) => setForm(p => ({ ...p, value: e.target.value }))} />
-        <Input label="Date *" type="date" value={form.date} onChange={(e: any) => setForm(p => ({ ...p, date: e.target.value }))} />
-        <button onClick={submit} disabled={loading}
-          style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-          className="w-full py-2.5 rounded-xl text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 transition-all">
-          {loading ? 'Adding...' : 'Add Outcome'}
-        </button>
       </div>
     </div>
   );
 }
 
-function UploadPage({ onSuccess }: any) {
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+// ─── CSV Upload ───────────────────────────────────────────────────────────────
 
-  async function handleFile(file: File) {
-    if (!file.name.endsWith('.csv')) return alert('CSV files only');
+function CSVPage() {
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const upload = async () => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
     setLoading(true);
-    try { const res = await uploadCSV(file); setResult(res.result); onSuccess(); } catch {}
-    setLoading(false);
-  }
+    setResult(null);
+    try {
+      const res = await fetch(`${API_URL}/api/decisions/upload-csv`, { method: "POST", body: fd });
+      const json = await res.json();
+      setResult(json.result);
+    } catch { alert("Upload failed."); }
+    finally { setLoading(false); }
+  };
 
   return (
-    <div className="max-w-md space-y-4">
-      <div style={{ background: '#0d1221', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '16px' }} className="p-6 space-y-5">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-100">Bulk Import</h2>
-          <p className="text-xs text-slate-500 mt-1">Upload a CSV to import multiple decisions at once</p>
+    <div style={{ maxWidth: 500, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Drop zone */}
+      <div
+        onClick={() => inputRef.current?.click()}
+        style={{
+          border: `1.5px dashed ${file ? T.accent : T.border}`,
+          borderRadius: T.radius, padding: "40px 24px", textAlign: "center", cursor: "pointer",
+          background: file ? `${T.accent}08` : T.surface,
+          transition: "all 0.2s",
+        }}
+      >
+        <i className={`ti ${file ? "ti-file-check" : "ti-upload"}`} style={{ fontSize: 28, color: file ? T.accent : T.textLow, display: "block", marginBottom: 10 }} aria-hidden />
+        <div style={{ fontSize: 13, color: file ? T.text : T.textMid, fontWeight: file ? 500 : 400 }}>
+          {file ? file.name : "Click to select a CSV file"}
         </div>
+        {!file && <div style={{ fontSize: 11, color: T.textLow, marginTop: 4 }}>or drag and drop</div>}
+        <input ref={inputRef} type="file" accept=".csv" style={{ display: "none" }} onChange={e => setFile(e.target.files?.[0] ?? null)} />
+      </div>
 
-        <div onClick={() => document.getElementById('csv')?.click()}
-          style={{ border: '1.5px dashed rgba(99,102,241,0.3)', borderRadius: '12px', background: 'rgba(99,102,241,0.03)' }}
-          className="p-10 text-center cursor-pointer hover:bg-indigo-500/5 transition-colors">
-          <div className="text-3xl mb-3">{loading ? '⏳' : '☁️'}</div>
-          <div className="text-xs font-medium text-slate-300 mb-1">{loading ? 'Uploading...' : 'Click to upload CSV'}</div>
-          <div className="text-xs text-slate-600">type, date, owner, cost_amount, description</div>
-          <input id="csv" type="file" accept=".csv" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+      {/* Format guide */}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radiusSm, padding: 16 }}>
+        <div style={{ fontSize: 10, color: T.textLow, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>EXPECTED FORMAT</div>
+        <code style={{ fontSize: 12, color: T.textMid, fontFamily: "monospace", lineHeight: 1.8, display: "block" }}>
+          type,date,owner,cost_amount,description<br />
+          hire,2024-01-10,Sales Team,75000,SDR hire<br />
+          ad_spend,2024-01-15,Marketing,40000,LinkedIn Q1
+        </code>
+      </div>
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <Btn onClick={upload} disabled={!file || loading}>
+          {loading ? "Uploading…" : <><i className="ti ti-cloud-upload" aria-hidden /> Upload</>}
+        </Btn>
+        {file && <Btn variant="ghost" onClick={() => { setFile(null); setResult(null); }}>Clear</Btn>}
+      </div>
+
+      {result && (
+        <div style={{
+          background: result.failed === 0 ? "rgba(52,211,153,0.07)" : "rgba(251,191,36,0.07)",
+          border: `1px solid ${result.failed === 0 ? "rgba(52,211,153,0.2)" : "rgba(251,191,36,0.2)"}`,
+          borderRadius: T.radiusSm, padding: 16,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#34d399" }}>
+            {result.success} decisions imported
+            {result.failed > 0 && <span style={{ color: "#fbbf24" }}>, {result.failed} failed</span>}
+          </div>
+          {result.errors?.map((e, i) => (
+            <div key={i} style={{ fontSize: 11, color: "#f87171", marginTop: 5 }}>{e}</div>
+          ))}
         </div>
+      )}
+    </div>
+  );
+}
 
-        {result && (
-          <div className="grid grid-cols-2 gap-3">
-            <div style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '12px' }} className="p-4 text-center">
-              <div className="text-xl font-bold text-emerald-400">{result.success}</div>
-              <div className="text-xs text-slate-500 mt-1">Imported</div>
-            </div>
-            <div style={{ background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)', borderRadius: '12px' }} className="p-4 text-center">
-              <div className="text-xl font-bold text-red-400">{result.failed}</div>
-              <div className="text-xs text-slate-500 mt-1">Failed</div>
+// ─── Root App ─────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [page, setPage] = useState<Page>("dashboard");
+
+  const PAGE_TITLES: Record<Page, { title: string; sub: string }> = {
+    dashboard:      { title: "Overview",      sub: "GTM performance at a glance" },
+    decisions:      { title: "Decisions",     sub: "All logged GTM spends" },
+    analysis:       { title: "Analysis",      sub: "ROI & recommendation per decision" },
+    "add-decision": { title: "New Decision",  sub: "Log a GTM spend" },
+    "add-outcome":  { title: "New Outcome",   sub: "Link revenue to a decision" },
+    csv:            { title: "Import CSV",    sub: "Bulk import decisions" },
+  };
+
+  const pt = PAGE_TITLES[page];
+
+  return (
+    <>
+      <style>{`
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { background: ${T.bg}; color: ${T.text}; font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; height: 100%; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 10px; }
+        input, select { color-scheme: dark; }
+        input:focus, select:focus { border-color: ${T.accent} !important; box-shadow: 0 0 0 3px ${T.accent}22 !important; outline: none; }
+      `}</style>
+
+      <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+        {/* ── Sidebar ── */}
+        <aside style={{
+          width: 216, flexShrink: 0,
+          background: T.surface,
+          borderRight: `1px solid ${T.border}`,
+          display: "flex", flexDirection: "column",
+          padding: "0 0 16px",
+          overflowY: "auto",
+        }}>
+          {/* Logo */}
+          <div style={{ padding: "20px 18px 18px", borderBottom: `1px solid ${T.border}`, marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: 8,
+                background: T.accent,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 14, fontWeight: 800, color: "#fff", flexShrink: 0,
+              }}>G</div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: T.text, lineHeight: 1.2 }}>GTM Tracker</div>
+                <div style={{ fontSize: 10, color: T.textLow, letterSpacing: "0.03em" }}>Attribution Engine</div>
+              </div>
             </div>
           </div>
-        )}
+
+          {/* Nav */}
+          <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 10px" }}>
+            {NAV_ITEMS.map(n => {
+              const active = page === n.id;
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => setPage(n.id)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 9,
+                    padding: "8px 10px", borderRadius: T.radiusSm,
+                    border: "none",
+                    background: active ? `${T.accent}1a` : "transparent",
+                    color: active ? T.accentHi : T.textLow,
+                    fontSize: 13, fontWeight: active ? 600 : 400,
+                    cursor: "pointer", textAlign: "left",
+                    transition: "all 0.12s",
+                    width: "100%",
+                  }}
+                  onMouseOver={e => { if (!active) (e.currentTarget as HTMLElement).style.color = T.textMid; }}
+                  onMouseOut={e => { if (!active) (e.currentTarget as HTMLElement).style.color = T.textLow; }}
+                >
+                  <i className={`ti ${n.icon}`} style={{ fontSize: 16, flexShrink: 0 }} aria-hidden />
+                  {n.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Bottom hint */}
+          <div style={{ marginTop: "auto", padding: "12px 18px 0", borderTop: `1px solid ${T.border}`, marginLeft: 0 }}>
+            <div style={{ fontSize: 11, color: T.textLow, lineHeight: 1.6 }}>
+              Decisions → Outcomes → ROI
+            </div>
+          </div>
+        </aside>
+
+        {/* ── Main ── */}
+        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: T.bg }}>
+          {/* Header */}
+          <header style={{
+            padding: "14px 28px",
+            borderBottom: `1px solid ${T.border}`,
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            background: T.surface, flexShrink: 0,
+          }}>
+            <div>
+              <h1 style={{ fontSize: 15, fontWeight: 700, color: T.text }}>{pt.title}</h1>
+              <p style={{ fontSize: 12, color: T.textLow, marginTop: 1 }}>{pt.sub}</p>
+            </div>
+            {page !== "add-decision" && (
+              <Btn onClick={() => setPage("add-decision")} style={{ fontSize: 12, padding: "7px 14px" }}>
+                <i className="ti ti-plus" aria-hidden /> New Decision
+              </Btn>
+            )}
+          </header>
+
+          {/* Page content */}
+          <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+            {page === "dashboard"     && <DashboardPage goTo={setPage} />}
+            {page === "decisions"     && <DecisionsPage goTo={setPage} />}
+            {page === "analysis"      && <AnalysisPage />}
+            {page === "add-decision"  && <AddDecisionPage goTo={setPage} />}
+            {page === "add-outcome"   && <AddOutcomePage />}
+            {page === "csv"           && <CSVPage />}
+          </div>
+        </main>
       </div>
-    </div>
+    </>
   );
 }
