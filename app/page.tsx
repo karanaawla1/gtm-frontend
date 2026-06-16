@@ -1030,7 +1030,7 @@ function AnalysisPage() {
                     <YAxis tick={{ fill: T.textLow, fontSize: 11 }} axisLine={false} tickLine={false} width={64}
                       tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
                     <Tooltip contentStyle={{ background: T.surfaceHi, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 12 }}
-                      formatter={(v: number) => [fmt(v), "Value"]} />
+                      formatter={(v: number | string) => [fmt(Number(v)), "Value"]} />
                     <Line type="monotone" dataKey="value" stroke="#6d5bf7" strokeWidth={2.5}
                       dot={{ fill: "#6d5bf7", r: 5, strokeWidth: 2, stroke: T.surface }}
                       activeDot={{ r: 7, fill: "#8b7cf8" }} />
